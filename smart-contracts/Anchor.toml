@@ -1,0 +1,23 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+marketplace = "Marketplace111111111111111111111111111111111111"
+escrow = "Escrow1111111111111111111111111111111111111111"
+reputation = "Reputation111111111111111111111111111111111111"
+
+[programs.devnet]
+marketplace = "Marketplace111111111111111111111111111111111111"
+escrow = "Escrow1111111111111111111111111111111111111111"
+reputation = "Reputation111111111111111111111111111111111111"
+
+[registry]
+url = "https://api.apr.dev"
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts" 
