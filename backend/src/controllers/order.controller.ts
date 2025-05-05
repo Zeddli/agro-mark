@@ -1,176 +1,13 @@
 import { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
-import type { OrderStatus } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { OrderService } from '../services/order.service';
+import { CacheService } from '../services/cache.service';
+import { formatError } from '../utils/validation.utils';
+import { OrderStatus } from '@prisma/client';
 
 /**
- * Order controller for managing purchase orders
+ * Order controller for the marketplace
  */
 export class OrderController {
-  /**
-   * Get orders for the authenticated user (both as buyer and seller)
-   * Can be filtered by type: 'buying', 'selling', or 'all'
-   */
-  static async getMyOrders(req: Request, res: Response) {
-    try {
-      const userId = (req as any).user?.id;
-      const { type = 'all', status, page = '1', limit = '10' } = req.query;
-      
-      if (!userId) {
-        return res.status(401).json({
-          status: 'error',
-          message: 'Not authenticated',
-        });
-      }
-
-      // Parse pagination params
-      const pageNum = parseInt(page as string, 10);
-      const limitNum = parseInt(limit as string, 10);
-      const skip = (pageNum - 1) * limitNum;
-
-      // Build filter conditions
-      const where: any = {};
-      
-      // Filter by order type (buying/selling)
-      if (type === 'buying') {
-        where.buyerId = userId;
-      } else if (type === 'selling') {
-        where.sellerId = userId;
-      } else {
-        // For 'all', show both buying and selling orders
-        where.OR = [
-          { buyerId: userId },
-          { sellerId: userId }
-        ];
-      }
-      
-      // Filter by status if provided
-      if (status) {
-        where.status = status as OrderStatus;
-      }
-
-      // Get orders with pagination
-      const orders = await prisma.order.findMany({
-        where,
-        skip,
-        take: limitNum,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          product: true,
-          buyer: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-              profileImage: true,
-            }
-          },
-          seller: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-              profileImage: true,
-            }
-          }
-        }
-      });
-
-      // Get total count for pagination
-      const totalCount = await prisma.order.count({ where });
-      const totalPages = Math.ceil(totalCount / limitNum);
-
-      return res.status(200).json({
-        status: 'success',
-        data: {
-          orders,
-          pagination: {
-            page: pageNum,
-            limit: limitNum,
-            totalCount,
-            totalPages,
-          }
-        }
-      });
-    } catch (error) {
-      console.error('Error fetching orders:', error);
-      return res.status(500).json({
-        status: 'error',
-        message: 'Server error while fetching orders',
-      });
-    }
-  }
-
-  /**
-   * Get a single order by ID
-   * User must be either the buyer or seller
-   */
-  static async getOrderById(req: Request, res: Response) {
-    try {
-      const userId = (req as any).user?.id;
-      const { id } = req.params;
-      
-      if (!userId) {
-        return res.status(401).json({
-          status: 'error',
-          message: 'Not authenticated',
-        });
-      }
-
-      const order = await prisma.order.findUnique({
-        where: { id },
-        include: {
-          product: true,
-          buyer: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-              profileImage: true,
-            }
-          },
-          seller: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-              profileImage: true,
-            }
-          }
-        }
-      });
-
-      if (!order) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'Order not found',
-        });
-      }
-
-      // Check if user is either buyer or seller
-      if (order.buyerId !== userId && order.sellerId !== userId) {
-        return res.status(403).json({
-          status: 'error',
-          message: 'You do not have permission to view this order',
-        });
-      }
-
-      return res.status(200).json({
-        status: 'success',
-        data: {
-          order,
-        }
-      });
-    } catch (error) {
-      console.error('Error fetching order:', error);
-      return res.status(500).json({
-        status: 'error',
-        message: 'Server error while fetching order details',
-      });
-    }
-  }
-
   /**
    * Create a new order
    */
@@ -185,97 +22,68 @@ export class OrderController {
         });
       }
 
-      const {
-        productId,
-        quantity,
-        shippingAddress
-      } = req.body;
+      const { productId, quantity, shippingAddress } = req.body;
 
       // Validate required fields
       if (!productId || !quantity) {
         return res.status(400).json({
           status: 'error',
-          message: 'Missing required fields',
+          message: 'Product ID and quantity are required',
         });
       }
 
-      // Get product details
-      const product = await prisma.product.findUnique({
-        where: { id: productId },
-      });
-
-      if (!product) {
-        return res.status(404).json({
-          status: 'error',
-          message: 'Product not found',
-        });
-      }
-
-      // Prevent buying own products
-      if (product.sellerId === userId) {
+      // Parse quantity to number
+      const parsedQuantity = parseInt(quantity, 10);
+      if (isNaN(parsedQuantity) || parsedQuantity <= 0) {
         return res.status(400).json({
           status: 'error',
-          message: 'You cannot purchase your own product',
+          message: 'Quantity must be a positive number',
         });
       }
 
-      // Check product availability
-      if (product.status !== 'ACTIVE') {
-        return res.status(400).json({
-          status: 'error',
-          message: 'This product is not available for purchase',
-        });
-      }
+      // Create the order
+      const order = await OrderService.createOrder(
+        userId,
+        productId,
+        parsedQuantity,
+        shippingAddress
+      );
 
-      // Check quantity
-      if (quantity > product.quantity) {
-        return res.status(400).json({
-          status: 'error',
-          message: 'Requested quantity exceeds available stock',
-        });
-      }
-
-      // Calculate total price
-      const totalPrice = product.price * quantity;
-
-      // Create order
-      const order = await prisma.order.create({
-        data: {
-          buyerId: userId,
-          sellerId: product.sellerId,
-          productId,
-          quantity,
-          totalPrice,
-          currency: product.currency,
-          status: 'CREATED',
-          shippingAddress,
-        }
-      });
+      // Clear user orders cache
+      await CacheService.clearByPattern(`orders:user:${userId}:*`);
 
       return res.status(201).json({
         status: 'success',
-        data: {
-          order,
-        }
+        data: { order }
       });
     } catch (error) {
       console.error('Error creating order:', error);
-      return res.status(500).json({
-        status: 'error',
-        message: 'Server error while creating order',
-      });
+      if (error instanceof Error) {
+        if (error.message.includes('Product not found')) {
+          return res.status(404).json({
+            status: 'error',
+            message: 'Product not found',
+          });
+        }
+        if (error.message.includes('not available') || 
+            error.message.includes('Not enough quantity') ||
+            error.message.includes('own product')) {
+          return res.status(400).json({
+            status: 'error',
+            message: error.message,
+          });
+        }
+      }
+      return res.status(500).json(formatError(error, 'Server error while creating order'));
     }
   }
 
   /**
-   * Update order status
-   * Different actions allowed based on current status and user role
+   * Get user's orders (as buyer or seller)
    */
-  static async updateOrderStatus(req: Request, res: Response) {
+  static async getUserOrders(req: Request, res: Response) {
     try {
       const userId = (req as any).user?.id;
-      const { id } = req.params;
-      const { status, trackingNumber } = req.body;
       
       if (!userId) {
         return res.status(401).json({
@@ -284,127 +92,165 @@ export class OrderController {
         });
       }
 
-      if (!status) {
+      const { 
+        role = 'all', 
+        status, 
+        page = '1', 
+        limit = '10' 
+      } = req.query;
+
+      // Parse pagination params
+      const pageNum = parseInt(page as string, 10);
+      const limitNum = parseInt(limit as string, 10);
+
+      // Validate role
+      if (role !== 'buyer' && role !== 'seller' && role !== 'all') {
         return res.status(400).json({
           status: 'error',
-          message: 'New status is required',
+          message: 'Role must be "buyer", "seller", or "all"',
         });
       }
 
-      // Get current order
-      const order = await prisma.order.findUnique({
-        where: { id },
-        include: {
-          product: true,
-        }
+      // Generate cache key
+      const cacheKey = `orders:user:${userId}:${role}:${status || 'all'}:${pageNum}:${limitNum}`;
+
+      // Get orders with caching
+      const result = await CacheService.getOrSet(
+        cacheKey,
+        () => OrderService.getUserOrders(
+          userId,
+          role as 'buyer' | 'seller' | 'all',
+          status as OrderStatus,
+          pageNum,
+          limitNum
+        ),
+        300 // Cache for 5 minutes
+      );
+
+      return res.status(200).json({
+        status: 'success',
+        data: result
       });
+    } catch (error) {
+      console.error('Error fetching user orders:', error);
+      return res.status(500).json(formatError(error, 'Server error while fetching orders'));
+    }
+  }
 
-      if (!order) {
-        return res.status(404).json({
+  /**
+   * Get a single order by ID
+   */
+  static async getOrderById(req: Request, res: Response) {
+    try {
+      const userId = (req as any).user?.id;
+      const { id } = req.params;
+      
+      if (!userId) {
+        return res.status(401).json({
           status: 'error',
-          message: 'Order not found',
+          message: 'Not authenticated',
         });
       }
 
-      // Verify user is either buyer or seller
-      const isBuyer = order.buyerId === userId;
-      const isSeller = order.sellerId === userId;
+      // Generate cache key
+      const cacheKey = `order:${id}:${userId}`;
 
-      if (!isBuyer && !isSeller) {
-        return res.status(403).json({
+      // Get order with caching
+      const order = await CacheService.getOrSet(
+        cacheKey,
+        () => OrderService.getOrderById(id, userId),
+        300 // Cache for 5 minutes
+      );
+
+      return res.status(200).json({
+        status: 'success',
+        data: { order }
+      });
+    } catch (error) {
+      console.error('Error fetching order:', error);
+      if (error instanceof Error) {
+        if (error.message === 'Order not found') {
+          return res.status(404).json({
+            status: 'error',
+            message: 'Order not found',
+          });
+        }
+        if (error.message.includes('permission')) {
+          return res.status(403).json({
+            status: 'error',
+            message: error.message,
+          });
+        }
+      }
+      return res.status(500).json(formatError(error, 'Server error while fetching order'));
+    }
+
+  /**
+   * Update order status
+   */
+  static async updateOrderStatus(req: Request, res: Response) {
+    try {
+      const userId = (req as any).user?.id;
+      const { id } = req.params;
+      
+      if (!userId) {
+        return res.status(401).json({
           status: 'error',
-          message: 'You do not have permission to update this order',
+          message: 'Not authenticated',
         });
       }
 
-      // Validate state transitions
-      let isValidTransition = false;
-      let updateData: any = { status };
+      const { status, trackingNumber } = req.body;
 
-      // Add tracking number if provided by seller
-      if (isSeller && trackingNumber) {
-        updateData.trackingNumber = trackingNumber;
-      }
-
-      // Validate transitions based on user role and current status
-      if (isBuyer) {
-        // Buyer can only mark as FUNDED, COMPLETED or DISPUTED
-        if (
-          (order.status === 'CREATED' && status === 'FUNDED') ||
-          (order.status === 'SHIPPED' && status === 'COMPLETED') ||
-          (['CREATED', 'FUNDED', 'SHIPPED'].includes(order.status) && status === 'DISPUTED')
-        ) {
-          isValidTransition = true;
-        }
-      } else if (isSeller) {
-        // Seller can only mark as SHIPPED, CANCELLED or REFUNDED
-        if (
-          (order.status === 'FUNDED' && status === 'SHIPPED') ||
-          (order.status === 'CREATED' && status === 'CANCELLED') ||
-          (['FUNDED', 'DISPUTED'].includes(order.status) && status === 'REFUNDED')
-        ) {
-          isValidTransition = true;
-        }
-      }
-
-      if (!isValidTransition) {
+      // Validate status
+      if (!status || !Object.values(OrderStatus).includes(status as OrderStatus)) {
         return res.status(400).json({
           status: 'error',
-          message: 'Invalid status transition',
+          message: 'Valid order status is required',
         });
       }
 
       // Update order status
-      const updatedOrder = await prisma.order.update({
-        where: { id },
-        data: updateData,
-        include: {
-          product: true,
-          buyer: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-            }
-          },
-          seller: {
-            select: {
-              id: true,
-              walletAddress: true,
-              name: true,
-            }
-          }
-        }
-      });
+      const updatedOrder = await OrderService.updateOrderStatus(
+        id,
+        userId,
+        status as OrderStatus,
+        trackingNumber
+      );
 
-      // If order is completed, update product's soldCount
-      if (status === 'COMPLETED') {
-        await prisma.product.update({
-          where: { id: order.productId },
-          data: {
-            soldCount: {
-              increment: order.quantity
-            },
-            // If all quantity is sold, mark as SOLD_OUT
-            ...(order.product.quantity === order.quantity && {
-              status: 'SOLD_OUT'
-            })
-          }
-        });
-      }
+      // Clear related caches
+      await Promise.all([
+        CacheService.del(`order:${id}:${userId}`),
+        CacheService.clearByPattern(`orders:user:${userId}:*`),
+        // Clear cache for the other party in the transaction
+        updatedOrder.buyerId !== userId 
+          ? CacheService.clearByPattern(`orders:user:${updatedOrder.buyerId}:*`) 
+          : CacheService.clearByPattern(`orders:user:${updatedOrder.sellerId}:*`)
+      ]);
 
       return res.status(200).json({
         status: 'success',
-        data: {
-          order: updatedOrder,
-        }
+        data: { order: updatedOrder }
       });
     } catch (error) {
       console.error('Error updating order status:', error);
-      return res.status(500).json({
-        status: 'error',
-        message: 'Server error while updating order status',
-      });
+      if (error instanceof Error) {
+        if (error.message === 'Order not found') {
+          return res.status(404).json({
+            status: 'error',
+            message: 'Order not found',
+          });
+        }
+        if (error.message.includes('authorized') || 
+            error.message.includes('transition') ||
+            error.message.includes('required')) {
+          return res.status(400).json({
+            status: 'error',
+            message: error.message,
+          });
+        }
+      }
+      return res.status(500).json(formatError(error, 'Server error while updating order status'));
     }
   }
 } 
