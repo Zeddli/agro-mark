@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Frontend React application
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000/api
+      - REACT_APP_SOLANA_NETWORK=devnet
+    depends_on:
+      - backend
+    networks:
+      - agromark_network
+
+  # Backend Express.js application
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=5000
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/agromark
+      - JWT_SECRET=development_secret_key_change_in_production
+      - SOLANA_NETWORK=devnet
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - db
+      - redis
+    networks:
+      - agromark_network
+
+  # PostgreSQL database
+  db:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=agromark
+    networks:
+      - agromark_network
+
+  # Redis for caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - agromark_network
+
+  # Solana local validator for development
+  solana-test-validator:
+    image: solanalabs/solana:latest
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+    command: solana-test-validator --log
+    volumes:
+      - solana_data:/root/.local/share/solana/install
+    networks:
+      - agromark_network
+
+networks:
+  agromark_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  solana_data: 

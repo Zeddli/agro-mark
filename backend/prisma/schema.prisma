@@ -1,0 +1,131 @@
+// This is your Prisma schema file
+// Learn more about it at https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model represents platform users
+model User {
+  id             String    @id @default(uuid())
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  walletAddress  String    @unique @map("wallet_address")
+  name           String?
+  email          String?   @unique
+  profileImage   String?   @map("profile_image")
+  bio            String?
+  isVerified     Boolean   @default(false) @map("is_verified")
+  
+  // Relations
+  products       Product[]
+  reviews        Review[]    @relation("ReviewAuthor")
+  receivedReviews Review[]    @relation("ReviewRecipient") 
+  purchaseOrders Order[]     @relation("Buyer")
+  saleOrders     Order[]     @relation("Seller")
+
+  @@map("users")
+}
+
+// Product represents an agricultural product listing
+model Product {
+  id             String    @id @default(uuid())
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  sellerId       String    @map("seller_id")
+  title          String
+  description    String    @db.Text
+  price          Decimal   @db.Decimal(10, 2)
+  quantity       Int
+  currency       String    @default("SOL")
+  status         ProductStatus @default(ACTIVE)
+  category       String
+  location       String?
+  images         String[]
+  metadataUri    String?   @map("metadata_uri")
+  soldCount      Int       @default(0) @map("sold_count")
+  
+  // Blockchain reference
+  onChainId      String?   @map("on_chain_id")
+  
+  // Relations
+  seller         User      @relation(fields: [sellerId], references: [id])
+  orders         Order[]
+
+  @@map("products")
+}
+
+// Order represents a transaction between buyer and seller
+model Order {
+  id             String    @id @default(uuid())
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  buyerId        String    @map("buyer_id")
+  sellerId       String    @map("seller_id")
+  productId      String    @map("product_id")
+  quantity       Int
+  totalPrice     Decimal   @map("total_price") @db.Decimal(10, 2)
+  currency       String    @default("SOL")
+  status         OrderStatus @default(CREATED)
+  
+  // Shipping information
+  shippingAddress String?   @map("shipping_address") @db.Text
+  trackingNumber  String?   @map("tracking_number")
+  
+  // Blockchain reference
+  escrowAddress   String?   @map("escrow_address")
+  transactionHash String?   @map("transaction_hash")
+  
+  // Relations
+  buyer          User      @relation("Buyer", fields: [buyerId], references: [id])
+  seller         User      @relation("Seller", fields: [sellerId], references: [id])
+  product        Product   @relation(fields: [productId], references: [id])
+  review         Review?
+
+  @@map("orders")
+}
+
+// Review represents feedback from a buyer
+model Review {
+  id             String    @id @default(uuid())
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  authorId       String    @map("author_id")
+  recipientId    String    @map("recipient_id")
+  orderId        String    @unique @map("order_id")
+  rating         Int       @db.SmallInt
+  comment        String?   @db.Text
+  
+  // Blockchain reference
+  onChainId      String?   @map("on_chain_id")
+  
+  // Relations
+  author         User      @relation("ReviewAuthor", fields: [authorId], references: [id])
+  recipient      User      @relation("ReviewRecipient", fields: [recipientId], references: [id])
+  order          Order     @relation(fields: [orderId], references: [id])
+
+  @@map("reviews")
+}
+
+// Enums
+enum ProductStatus {
+  ACTIVE
+  SOLD_OUT
+  DEACTIVATED
+  FLAGGED
+}
+
+enum OrderStatus {
+  CREATED
+  FUNDED
+  SHIPPED
+  COMPLETED
+  DISPUTED
+  CANCELLED
+  REFUNDED
+} 
